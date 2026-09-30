@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Next Read</title>
+<style>
+:root{--bg:#f3f5f8;--ink:#1b2a41;--mute:#5d6b7e;--line:#d5dbe4;--accent:#0f766e;--on-accent:#fff;--spine:#d99a1e;--chip:#e3ebf0;--field:#fff;--shadow:0 6px 16px rgba(27,42,65,.22)}
+@media (prefers-color-scheme:dark){:root{--bg:#111925;--ink:#e8edf4;--mute:#9aa8ba;--line:#2a3648;--accent:#4fd1c5;--on-accent:#0b1620;--spine:#e8b04a;--chip:#1f2b3b;--field:#192333;--shadow:0 6px 16px rgba(0,0,0,.5)}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1000px;margin:0 auto;padding:56px 20px 96px}
+.serif,h1,h2{font-family:"Iowan Old Style",Georgia,serif}
+h1{font-size:clamp(2.4rem,7vw,3.8rem);line-height:1.05;letter-spacing:-.02em;margin:0 0 10px;font-weight:600}
+.lede{color:var(--mute);margin:0 0 28px;max-width:46ch}
+form{display:flex;gap:8px;max-width:620px}
+input{flex:1;min-width:0;padding:14px 16px;font:inherit;color:var(--ink);background:var(--field);border:1px solid var(--line);border-radius:8px}
+button{font:inherit;cursor:pointer;color:inherit}
+form button{padding:14px 24px;border:0;border-radius:8px;background:var(--accent);color:var(--on-accent);font-weight:600}
+:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+#status{min-height:1.5em;margin:14px 0 0;color:var(--mute)}
+#status.error{color:#c2410c}
+h2{font-size:1.5rem;margin:48px 0 16px;font-weight:600}
+.grid{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:28px 20px}
+
+/* book covers */
+.cover{display:block;width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:2px 6px 6px 2px;box-shadow:var(--shadow),inset 4px 0 6px -2px rgba(0,0,0,.35)}
+.fallback{display:flex;align-items:flex-end;padding:14px 12px;color:#fff;font:600 1rem/1.2 "Iowan Old Style",Georgia,serif;text-shadow:0 1px 2px rgba(0,0,0,.4);overflow:hidden}
+
+.pick{display:block;width:100%;text-align:left;background:none;border:0;padding:0}
+.pick .cover{transition:transform .15s}
+.pick:hover .cover{transform:translateY(-4px)}
+.t{display:block;font-weight:600;margin-top:10px;line-height:1.3}
+.by{display:block;color:var(--mute);font-size:.9rem}
+
+/* chosen book */
+.chosen{display:flex;gap:20px;align-items:flex-end;margin:40px 0 0}
+.chosen .cover{width:96px;flex:none}
+.chosen h2{margin:0}
+.chosen p{margin:4px 0 0;color:var(--mute)}
+
+/* recommendations */
+.rec .meter{height:5px;border-radius:3px;background:var(--line);margin:10px 0 8px;overflow:hidden}
+.rec .meter i{display:block;height:100%;background:var(--spine)}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin:0 0 8px}
+.chips span{background:var(--chip);border-radius:99px;padding:1px 9px;font-size:.78rem}
+.more{background:none;border:0;padding:0;color:var(--accent);font-weight:600;font-size:.9rem;text-decoration:underline}
+
+/* loading skeleton */
+.skel .cover{background:linear-gradient(90deg,var(--chip),var(--line),var(--chip));background-size:200% 100%;animation:sh 1.2s linear infinite;box-shadow:none}
+@keyframes sh{to{background-position:-200% 0}}
+@media (prefers-reduced-motion:reduce){.skel .cover{animation:none}.pick .cover{transition:none}}
+[hidden]{display:none}
+</style>
+</head>
+<body>
+<main>
+  <h1>Next Read</h1>
+  <p class="lede">Tell us a book you loved. We'll find books that share its subjects.</p>
+
+  <form id="search">
+    <input id="q" type="search" placeholder="Try “The Hobbit” or “Dune”" aria-label="Book title" required>
+    <button type="submit">Search</button>
+  </form>
+  <p id="status" role="status" aria-live="polite"></p>
+
+  <section id="pick-section" hidden>
+    <h2>Which one did you mean?</h2>
+    <ul class="grid" id="options"></ul>
+  </section>
+
+  <section id="rec-section" hidden>
+    <div class="chosen" id="chosen"></div>
+    <h2>You might like</h2>
+    <ul class="grid" id="recs"></ul>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const setStatus = (msg, err) => { const s = $("#status"); s.textContent = msg; s.className = err ? "error" : ""; };
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+// Cover image with a colored title block when no cover exists or it fails to load.
+function fallbackCover(title) {
+  let h = 0;
+  for (const c of title) h = (h * 31 + c.charCodeAt(0)) % 360;
+  const d = el("div", "cover fallback", title);
+  d.style.background = `linear-gradient(160deg,hsl(${h} 45% 38%),hsl(${(h + 40) % 360} 50% 24%))`;
+  return d;
+}
+function cover(id, title) {
+  if (!id) return fallbackCover(title);
+  const img = el("img", "cover");
+  img.alt = `Cover of ${title}`;
+  img.loading = "lazy";
+  img.src = `https://covers.openlibrary.org/b/id/${id}-M.jpg?default=false`;
+  img.onerror = () => img.replaceWith(fallbackCover(title));
+  return img;
+}
+
+async function api(path) {
+  const res = await fetch(path);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Something went wrong. Try again.");
+  return data;
+}
+
+function skeletons(list, n) {
+  list.replaceChildren(...Array.from({ length: n }, () => {
+    const li = el("li", "skel");
+    li.append(el("div", "cover"));
+    return li;
+  }));
+}
+
+$("#search").addEventListener("submit", async e => {
+  e.preventDefault();
+  $("#rec-section").hidden = true;
+  $("#pick-section").hidden = false;
+  skeletons($("#options"), 8);
+  setStatus("Searching…");
+  try {
+    const { results } = await api("/api/search?q=" + encodeURIComponent($("#q").value.trim()));
+    if (!results.length) {
+      $("#pick-section").hidden = true;
+      return setStatus("No books found. Check the spelling or try fewer words.", true);
+    }
+    $("#options").replaceChildren(...results.map(book => {
+      const li = el("li"), b = el("button", "pick");
+      b.type = "button";
+      b.append(cover(book.cover, book.title), el("span", "t", book.title), el("span", "by", book.authors.join(", ")));
+      b.onclick = () => recommend(book);
+      li.append(b);
+      return li;
+    }));
+    setStatus("");
+  } catch (err) {
+    $("#pick-section").hidden = true;
+    setStatus(err.message, true);
+  }
+});
+
+async function recommend(book) {
+  setStatus(`Finding books like ${book.title}…`);
+  const chosen = $("#chosen");
+  chosen.replaceChildren(cover(book.cover, book.title));
+  const info = el("div");
+  info.append(el("h2", "", book.title), el("p", "", book.authors.join(", ")));
+  chosen.append(info);
+  skeletons($("#recs"), 8);
+  $("#rec-section").hidden = false;
+  $("#rec-section").scrollIntoView();
+
+  const p = new URLSearchParams({ title: book.title, n: 8 });
+  book.authors.forEach(a => p.append("author", a));
+  try {
+    const { recommendations } = await api(`/api/books/${book.id}/recommendations?${p}`);
+    const top = Math.max(...recommendations.map(r => r.score)) || 1;
+    $("#recs").replaceChildren(...recommendations.map(r => {
+      const li = el("li", "rec");
+      const meter = el("div", "meter"), fill = el("i");
+      fill.style.width = Math.round(r.score / top * 100) + "%";
+      meter.append(fill);
+      meter.title = "Similarity " + r.score.toFixed(2);
+
+      const chips = el("div", "chips");
+      r.shared.slice(0, 3).forEach(s => chips.append(el("span", "", s)));
+      const more = el("button", "more", "Find more like this");
+      more.type = "button";
+      more.onclick = () => recommend({ id: r.id, title: r.title, authors: r.author, cover: r.cover });
+
+      li.append(cover(r.cover, r.title), meter, el("span", "t", r.title), el("span", "by", r.author.join(", ")), chips, more);
+      return li;
+    }));
+    setStatus("");
+  } catch (err) {
+    $("#rec-section").hidden = true;
+    setStatus(err.message, true);
+  }
+}
+</script>
+</body>
+</html>
